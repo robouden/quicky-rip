@@ -2,6 +2,58 @@
 
 This document describes the design of Quicky, a newsletter digest system, for anyone who wants to build something similar. It includes the actual prompts, schema, and pipeline logic — not just a description of the approach — so it can be reconstructed directly rather than reimagined from scratch.
 
+## Running the Go implementation
+
+This repository also contains a Go implementation of the design below. Ingest, classify and parse are working; synthesis and delivery are not yet built. Current state and known gaps are in [STATUS.md](STATUS.md).
+
+### Requirements
+
+- Go 1.26 (the `Makefile` assumes `/usr/local/go/bin/go`; override with `make GO=go`)
+- PostgreSQL 13+ on the local socket, with `sudo` access to the `postgres` user for the migrations
+- An Anthropic API key with metered API billing — a Claude Pro/Max subscription does not cover unattended API use
+- A Mailgun domain with an inbound route pointing at `/webhooks/mailgun/inbound` (only needed for real email; the end-to-end script signs its own requests)
+
+### Database
+
+```bash
+scripts/apply_migration.sh                  # creates the `quicky` database and role, applies all migrations
+sudo -u postgres psql -c "ALTER ROLE quicky PASSWORD 'choose-one'"
+```
+
+Migrations run as `postgres`, not as the app role, because each `CREATE TABLE` is paired with a `GRANT` in the same transaction. They are not idempotent; to re-run one, `dropdb quicky` first or pass the single file: `scripts/apply_migration.sh migrations/002_parsed.sql`.
+
+### Configuration
+
+Create `.env` in the repository root (it is gitignored):
+
+```
+DATABASE_URL=postgres://quicky:choose-one@localhost:5432/quicky
+MAILGUN_SIGNING_KEY=...        # Mailgun → Sending → Webhooks → HTTP webhook signing key
+ANTHROPIC_API_KEY=sk-ant-...
+HTTP_ADDR=:8080                # optional
+MODEL_FAST=claude-haiku-4-5-20251001    # optional: classify, parse, quote gates
+MODEL_STRONG=claude-sonnet-5            # optional: synthesis
+```
+
+### Run
+
+```bash
+make build && make test
+set -a; . ./.env; set +a
+make run
+```
+
+One process serves the webhook and runs the stage workers. The queue is the database, so several processes can run against the same database on different hosts.
+
+### Verify
+
+```bash
+scripts/verify_grants.sh     # inserts into every table as the app role, then rolls back
+scripts/e2e_ingest.sh        # signed webhook → classify, no Anthropic call needed
+```
+
+Starting the binary with a real `ANTHROPIC_API_KEY` will parse any classified newsletters already in the queue. Users with no active subscription and no trial are skipped without a model call; set `subscription_active = TRUE` on a `users` row to parse its mail.
+
 ## What it does
 
 Each user gets a dedicated email address. They redirect their newsletter subscriptions to that address instead of their own inbox. Once a day, at a time the user chooses, everything received since the last digest is synthesized into a single email: one digest instead of dozens of separate newsletters scattered through the day.
