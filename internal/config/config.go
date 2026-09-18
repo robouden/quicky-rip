@@ -12,6 +12,7 @@ type Config struct {
 	AnthropicAPIKey   string
 	ModelFast         string // classify, parse, quote gates
 	ModelStrong       string // synthesis
+	AdminPassword     string // basic auth for /admin; empty disables auth
 }
 
 func Load() (Config, error) {
@@ -22,6 +23,7 @@ func Load() (Config, error) {
 		AnthropicAPIKey:   os.Getenv("ANTHROPIC_API_KEY"),
 		ModelFast:         envOr("MODEL_FAST", "claude-haiku-4-5-20251001"),
 		ModelStrong:       envOr("MODEL_STRONG", "claude-sonnet-5"),
+		AdminPassword:     os.Getenv("ADMIN_PASSWORD"),
 	}
 	for k, v := range map[string]string{
 		"DATABASE_URL":        c.DatabaseURL,

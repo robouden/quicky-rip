@@ -15,25 +15,33 @@ import (
 	"syscall"
 	"time"
 
+	"codeberg.org/Safecast/quicky/internal/admin"
 	"codeberg.org/Safecast/quicky/internal/classify"
 	"codeberg.org/Safecast/quicky/internal/config"
 	"codeberg.org/Safecast/quicky/internal/ingest"
 	"codeberg.org/Safecast/quicky/internal/llm"
+	"codeberg.org/Safecast/quicky/internal/logbuf"
 	"codeberg.org/Safecast/quicky/internal/parse"
 	"codeberg.org/Safecast/quicky/internal/queue"
+	"codeberg.org/Safecast/quicky/internal/settings"
 	"codeberg.org/Safecast/quicky/internal/store"
 	"github.com/jackc/pgx/v5"
 )
 
 func main() {
-	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := run(log); err != nil && !errors.Is(err, context.Canceled) {
+	logs := logbuf.New(500)
+	handler := logbuf.NewTee(
+		slog.NewJSONHandler(os.Stdout, nil),
+		slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}),
+	)
+	log := slog.New(handler)
+	if err := run(log, logs); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("exiting", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger) error {
+func run(log *slog.Logger, logs *logbuf.Buffer) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -47,10 +55,15 @@ func run(log *slog.Logger) error {
 	}
 	defer db.Close()
 
-	ai := llm.New(cfg.AnthropicAPIKey)
+	sett := settings.New(db, cfg.ModelFast, cfg.ModelStrong)
+	ai := llm.NewRouter(llm.New(cfg.AnthropicAPIKey), sett)
 
 	mux := http.NewServeMux()
 	mux.Handle("/webhooks/mailgun/inbound", &ingest.Handler{DB: db, SigningKey: cfg.MailgunSigningKey, Log: log})
+	adminHandler := &admin.Handler{Settings: sett, Logs: logs, DB: db, Password: cfg.AdminPassword, Log: log}
+	mux.Handle("/admin", adminHandler)
+	mux.HandleFunc("/admin/logs", adminHandler.LogsHandler)
+	mux.Handle("/admin/emails", http.RedirectHandler("/admin#emails", http.StatusFound))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 

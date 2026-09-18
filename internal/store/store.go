@@ -156,6 +156,48 @@ func (d *DB) UpsertSender(ctx context.Context, userID, fromEmail, displayName st
 	return id, err
 }
 
+// EmailSummary is a row for the admin data view, not the pipeline.
+type EmailSummary struct {
+	ID             string
+	FromEmail      string
+	Subject        string
+	Classification string
+	ClassifierNote string
+	ParsedSummary  *string
+	Attempts       int
+	LastError      *string
+	CreatedAt      time.Time
+}
+
+// RecentEmails returns the most recently ingested emails with their
+// classification and, when parsed, the parse-stage summary — for the admin
+// data view.
+func (d *DB) RecentEmails(ctx context.Context, limit int) ([]EmailSummary, error) {
+	rows, err := d.Pool.Query(ctx, `
+		SELECT e.id, e.from_email, e.subject, e.classification,
+		       COALESCE(e.classifier_notes, ''), p.summary,
+		       e.attempts, e.last_error, e.created_at
+		  FROM inbound_emails e
+		  LEFT JOIN parsed_emails p ON p.email_id = e.id
+		 ORDER BY e.created_at DESC
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []EmailSummary
+	for rows.Next() {
+		var s EmailSummary
+		if err := rows.Scan(&s.ID, &s.FromEmail, &s.Subject, &s.Classification,
+			&s.ClassifierNote, &s.ParsedSummary, &s.Attempts, &s.LastError, &s.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // SetClassification records the classifier's verdict and hands the row a fresh
 // attempt budget for the parse stage. Nothing is ever deleted: non-newsletters
 // land as transactional, with needs_confirmation surfaced.
